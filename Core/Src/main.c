@@ -1,19 +1,47 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2022 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
+
+TODO:
+-	iButton interface
+
+Vmot remeasured on PA1 named ADC1_IN1
+
+field feedback measured on PA2 named ADC_IN2
+
+OLED SSD1306
+	Resolution: 128 x 64
+	Input Voltage: 3.3V ~ 6V
+	SDA on PB7 named I2C1_SDA
+	SCL on PB6 named I2C1_SCL
+
+BlackPill onboard Blue LED on PC13 named LED
+
+BlackPill onboard button on PA0 named KEY
+
+Optical encoder
+	channel one on PA6 named TIM3_CH1
+	channel two on PA7 named TIM3_CH2
+
+A4988 stepper motor driver with chopping killed
+	S_ENABLE	on	PB12
+	MS1			on	PB13
+	MS2			on	PB14
+	MS3			on	PB15
+	S_RESET		on	PA10
+	S_SLEEP		on	B0
+	STEP		on	B1
+	DIR			on	B2
+	The step limit is in the "counter_limit" constant.
+
+1-Wire interface on USART2
+	OW	on 	PA2	named	USART2_TX
+	SN: 01/0000129A55D6/F3
+
+RS232 on
+	tx	on  PA11	named USART6_TX
+	rx	on  PA12	named USART6_RX
+
+
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
@@ -21,7 +49,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ssd1306.h"
+#include "fonts.h"
+#include "test.h"
+#include "stdio.h"
+#include "OneWire.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,14 +78,37 @@ I2C_HandleTypeDef hi2c1;
 TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_rx;
+DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
+
+OledHandleTypedef oled = {
+  .type = SH1106_I2C,        // SH1106 or SSD1306
+  .orientation = 1,           // 1: downward 0: upward
+  .i2c = &hi2c1,              // I2C1 at RB9/RB8
+  .i2c_address = 0x78         // 0x78 (0x3c<<1) or 0x7A (0x3D<<1)
+};
+
+uint16_t size;
+uint8_t Data[256];
+int count=0;
+int motor_position =0;
+char text[10] = "empty",spi_out_buf[10]="",spi_in_buf[10]="";
+int raw;
+float voltage;
+uint32_t counter = 0;
+int16_t counter_position = 0;
+uint32_t us_delay = 0;
+const int counter_limit=15300; // put maximum counter value here
+int rec_rom_id;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
@@ -64,7 +119,23 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+extern float Temp[MAXDEVICES_ON_THE_BUS];
 
+void HAL_TIM_IC_CaptureCallback (TIM_HandleTypeDef *htim)
+{
+	counter = __HAL_TIM_GET_COUNTER(htim) / 2;
+	if (counter > 30000)
+	{
+		__HAL_TIM_SetCounter(&htim3,0);
+		counter=0;
+	}
+	if (counter > counter_limit)
+	{
+		__HAL_TIM_SetCounter(&htim3, counter_limit * 2);
+		counter=counter_limit;
+	}
+	counter_position = (int16_t)counter;
+}
 /* USER CODE END 0 */
 
 /**
@@ -95,21 +166,104 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_I2C1_Init();
   MX_ADC1_Init();
   MX_TIM3_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  HAL_TIM_Encoder_Start_IT (&htim3, TIM_CHANNEL_ALL   );
+  /* Initialize stepper motor controller */
+  HAL_GPIO_WritePin(MS1_GPIO_Port, MS1_Pin, GPIO_PIN_RESET); // set high for half step
+  HAL_GPIO_WritePin(MS2_GPIO_Port, MS2_Pin, GPIO_PIN_RESET); // set for microstep
+  HAL_GPIO_WritePin(MS3_GPIO_Port, MS3_Pin, GPIO_PIN_RESET); // set for microstep
+  HAL_GPIO_WritePin(S_SLEEP_GPIO_Port, S_SLEEP_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(S_ENABLE_GPIO_Port, S_ENABLE_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(STEP_GPIO_Port, STEP_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(S_RESET_GPIO_Port, S_RESET_Pin, GPIO_PIN_RESET);
+  HAL_Delay(100);
+  HAL_GPIO_WritePin(S_RESET_GPIO_Port, S_RESET_Pin, GPIO_PIN_SET);
+
+// OLED init
+  SSD1306_Init(&oled);
+  SSD1306_GotoXY(0, 0);
+  SSD1306_Puts("SH1106", &Font_11x18, SSD1306_COLOR_WHITE);
+  HAL_ADC_Start(&hadc1);
+  HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+  raw = HAL_ADC_GetValue(&hadc1);
+  voltage = raw /  187.3 ; // Umcu = 3.375V
+  sprintf(text, "%1.2f", voltage);
+  SSD1306_GotoXY (0, 20);
+  SSD1306_Puts (text, &Font_11x18, 1);
+  SSD1306_Puts ("V", &Font_11x18, 1);
+//  SSD1306_dim(127);
+  SSD1306_UpdateScreen(); // update screen
+  HAL_Delay(1000);
+
+  OneWire_Init();
+  OneWire_SetCallback();
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+
+
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+	  while (motor_position != counter_position)
+	  {
+		  HAL_GPIO_WritePin(S_ENABLE_GPIO_Port, S_ENABLE_Pin, GPIO_PIN_RESET);
+		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+		  if (motor_position < counter_position)
+		  {
+
+			  HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin, GPIO_PIN_SET);
+			  HAL_GPIO_WritePin(STEP_GPIO_Port, STEP_Pin, GPIO_PIN_SET);
+			  motor_position = motor_position + 1 ;
+			  HAL_GPIO_WritePin(STEP_GPIO_Port, STEP_Pin, GPIO_PIN_RESET);
+			  us_delay = 7500;
+			  while (us_delay) { us_delay = us_delay - 1;}
+		  }
+		  else
+		  {
+
+			  HAL_GPIO_WritePin(DIR_GPIO_Port, DIR_Pin, GPIO_PIN_RESET);
+			  HAL_GPIO_WritePin(STEP_GPIO_Port, STEP_Pin, GPIO_PIN_SET);
+			  motor_position = motor_position - 1 ;
+			  HAL_GPIO_WritePin(STEP_GPIO_Port, STEP_Pin, GPIO_PIN_RESET);
+			  us_delay = 7500;
+			  while (us_delay) { us_delay = us_delay - 1;}
+		  }
+		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+//		  HAL_GPIO_WritePin(S_ENABLE_GPIO_Port, S_ENABLE_Pin, GPIO_PIN_SET);
+	  }
+
+
+//	  sprintf(text, "%5i", counter_position);
+//	  SSD1306_GotoXY(0, 30);
+//	  SSD1306_Puts (text, &Font_11x18, 1);
+//	  SSD1306_UpdateScreen();
+
+	  rec_rom_id = get_ROMid();
+	  SSD1306_Fill(0);
+	  SSD1306_GotoXY(0, 0);
+//	  sprintf(text, "%s %u", ow.ids);
+	  //sprintf(textout1, "%s %u", name1, var1);
+	  SSD1306_Puts (text, &Font_11x18, 1);
+	  SSD1306_UpdateScreen();
+
+	  HAL_Delay (1000);
+
+
   }
   /* USER CODE END 3 */
 }
@@ -317,13 +471,32 @@ static void MX_USART2_UART_Init(void)
   huart2.Init.Mode = UART_MODE_TX_RX;
   huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_HalfDuplex_Init(&huart2) != HAL_OK)
+  if (HAL_UART_Init(&huart2) != HAL_OK)
   {
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 
 }
 
@@ -384,6 +557,8 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+
 
 /* USER CODE END 4 */
 
