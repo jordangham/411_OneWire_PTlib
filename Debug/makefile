@@ -60,8 +60,8 @@ all: main-build
 main-build: 411_OneWire_PTlib.elf secondary-outputs
 
 # Tool invocations
-411_OneWire_PTlib.elf 411_OneWire_PTlib.map: $(OBJS) $(USER_OBJS) Z:\stm32\411_OneWire_PTlib\STM32F411CEUX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "411_OneWire_PTlib.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"Z:\stm32\411_OneWire_PTlib\STM32F411CEUX_FLASH.ld" --specs=nosys.specs -Wl,-Map="411_OneWire_PTlib.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -u _scanf_float -Wl,--start-group -lc -lm -Wl,--end-group
+411_OneWire_PTlib.elf 411_OneWire_PTlib.map: $(OBJS) $(USER_OBJS) D:\stm32\411_OneWire_PTlib\STM32F411CEUX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "411_OneWire_PTlib.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"D:\stm32\411_OneWire_PTlib\STM32F411CEUX_FLASH.ld" --specs=nosys.specs -Wl,-Map="411_OneWire_PTlib.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -u _scanf_float -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
